@@ -11,9 +11,9 @@
   "dependencies": {
     "react": "^18",
     "@cornerstonejs/calculate-suv": "1.1.0",
-    "@cornerstonejs/core": "2.6.2",
-    "@cornerstonejs/dicom-image-loader": "2.6.2",
-    "@cornerstonejs/tools": "2.6.2",
+    "@cornerstonejs/core": "2.19.11",
+    "@cornerstonejs/dicom-image-loader": "2.19.11",
+    "@cornerstonejs/tools": "2.19.11",
     "@icr/polyseg-wasm": "^0.4.0",
     "dcmjs": "0.33.0",
     "dicom-parser": "1.8.21",
