@@ -36,12 +36,6 @@ const viewportId3 = "CT_3D"
 const segmentationId = "Segmentation_1"
 const volumeId = "Volume_1"
 
-export async function peerImport(moduleId) {
-  debugger
-  if (moduleId === "@icr/polyseg-wasm") {
-    return import("@icr/polyseg-wasm")
-  }
-}
 
 function App() {
   const elementRef1 = useRef<HTMLDivElement>(null)
@@ -56,7 +50,7 @@ function App() {
       }
       running.current = true
 
-      await csRenderInit({ peerImport })
+      await csRenderInit()
       await csToolsInit()
       dicomImageLoaderInit({ maxWebWorkers: 1 })
       // Add tools to Cornerstone3D
