@@ -167,6 +167,7 @@ const registerWebImageLoader = (imageLoader) => {
 
   function _loadImageIntoBuffer(imageId, options) {
     const uri = imageId.replace("web:", "");
+
     const promise = new Promise((resolve, reject) => {
       loadImage(uri, imageId)
         .promise.then(
@@ -198,12 +199,6 @@ const registerWebImageLoader = (imageLoader) => {
 
 // Metadata Provider
 const hardcodedMetaDataProvider = (type, imageId, imageIds) => {
-  const colonIndex = imageId.indexOf(":");
-  const scheme = imageId.substring(0, colonIndex);
-  if (scheme !== "web") {
-    return;
-  }
-
   if (type === "imagePixelModule") {
     return {
       pixelRepresentation: 0,
@@ -253,6 +248,9 @@ const hardcodedMetaDataProvider = (type, imageId, imageIds) => {
 
 const CornerstoneViewer = () => {
   const [sliceIndex, setSliceIndex] = useState(0);
+  const [selectedInstance, setSelectedInstance] = useState(null);
+  const [study, setStudy] = useState(null);
+  console.log("study", study);
   const [isInitialized, setIsInitialized] = useState(false);
   const [activeToolName, setActiveToolName] = useState("WindowLevel");
   const element1Ref = useRef(null);
@@ -296,7 +294,24 @@ const CornerstoneViewer = () => {
       element.removeEventListener("mousedown", handleMouseDown);
     };
   }, [activeToolName]);
-
+  const fetchStudy = async (study) => {
+    try {
+      const data = await fetch("/api/getStudyData", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          studyId: study,
+        }),
+      });
+      const response = await data.json();
+      setStudy(response.studies[0].series);
+      setSelectedInstance(0);
+    } catch (error) {
+      console.log(error);
+    }
+  };
   const initializeTools = () => {
     try {
       console.log("Initializing tools...");
@@ -368,114 +383,101 @@ const CornerstoneViewer = () => {
       toolGroupRef.current = null;
     }
   };
+  const initializeCornerstone = async (imageStack) => {
+    if (typeof window === "undefined" || !element1Ref.current) return;
 
+    try {
+      // Initialize Cornerstone
+      await cornerstone.init();
+
+      // Initialize Cornerstone Tools
+      await cornerstoneTools.init();
+
+      // Debug: Log available tools and their toolName properties
+      const availableTools = Object.keys(cornerstoneTools).filter((key) =>
+        key.endsWith("Tool")
+      );
+      availableTools.forEach((toolKey) => {
+        const tool = cornerstoneTools[toolKey];
+        console.log(`${toolKey}.toolName:`, tool?.toolName || "undefined");
+      });
+
+      // Register web image loader
+      registerWebImageLoader(cornerstone.imageLoader);
+
+      // Add metadata provider
+      cornerstone.metaData.addProvider(
+        (type, imageId) => hardcodedMetaDataProvider(type, imageId, imageIds),
+        10000
+      );
+
+      // Create rendering engine
+      const renderingEngine = new cornerstone.RenderingEngine(
+        renderingEngineId
+      );
+      renderingEngineRef.current = renderingEngine;
+      console.log("Rendering engine created:", renderingEngineId);
+
+      // Set up stack viewport
+      const viewportInputArray = [
+        {
+          viewportId: "COLOR_STACK",
+          type: cornerstone.Enums.ViewportType.STACK,
+          element: element1Ref.current,
+        },
+      ];
+
+      renderingEngine.setViewports(viewportInputArray);
+      console.log("Viewport set:", viewportId);
+
+      // Set stack for viewport
+      const stackViewport = renderingEngine.getStackViewports()[0];
+      if (!stackViewport) {
+        throw new Error("Stack viewport not found");
+      }
+
+      try {
+        await stackViewport.setStack(imageStack, 0);
+        stackViewport.render();
+
+        const viewport = renderingEngine.getViewport(viewportId);
+        if (viewport) {
+          viewport.setProperties({
+            voiRange: { lower: 0, upper: 255 },
+            interpolationType: cornerstone.Enums.InterpolationType.LINEAR,
+            invert: false,
+          });
+          viewport.resetCamera();
+          viewport.render();
+        }
+      } catch (error) {
+        console.error("Error loading stack images:", error);
+        return;
+      }
+
+      // Initialize tools
+      initializeTools();
+
+      // Force re-render
+      setTimeout(() => {
+        renderingEngine.resize();
+        renderingEngine.render();
+        console.log("Viewport re-rendered");
+      }, 100);
+
+      setIsInitialized(true);
+      console.log("Initialization complete, isInitialized set to true");
+    } catch (error) {
+      console.error("Error initializing Cornerstone:", error);
+      isMountedRef.current = false;
+    }
+  };
   useEffect(() => {
     if (isMountedRef.current) return; // Prevent double initialization
     isMountedRef.current = true;
 
-    const initializeCornerstone = async () => {
-      if (typeof window === "undefined" || !element1Ref.current) return;
-
-      try {
-        console.log("Starting Cornerstone initialization...");
-        // Initialize Cornerstone
-        await cornerstone.init();
-        console.log("Cornerstone initialized");
-
-        // Initialize Cornerstone Tools
-        await cornerstoneTools.init();
-        console.log("Cornerstone Tools initialized");
-
-        // Debug: Log available tools and their toolName properties
-        const availableTools = Object.keys(cornerstoneTools).filter((key) =>
-          key.endsWith("Tool")
-        );
-        console.log("Available tools:", availableTools);
-        availableTools.forEach((toolKey) => {
-          const tool = cornerstoneTools[toolKey];
-          console.log(`${toolKey}.toolName:`, tool?.toolName || "undefined");
-        });
-
-        // Register web image loader
-        registerWebImageLoader(cornerstone.imageLoader);
-        console.log("Web image loader registered");
-
-        // Add metadata provider
-        cornerstone.metaData.addProvider(
-          (type, imageId) => hardcodedMetaDataProvider(type, imageId, imageIds),
-          10000
-        );
-
-        // Create rendering engine
-        const renderingEngine = new cornerstone.RenderingEngine(
-          renderingEngineId
-        );
-        renderingEngineRef.current = renderingEngine;
-        console.log("Rendering engine created:", renderingEngineId);
-
-        // Set up stack viewport
-        const viewportInputArray = [
-          {
-            viewportId: "COLOR_STACK",
-            type: cornerstone.Enums.ViewportType.STACK,
-            element: element1Ref.current,
-          },
-        ];
-
-        renderingEngine.setViewports(viewportInputArray);
-        console.log("Viewport set:", viewportId);
-
-        // Set stack for viewport
-        const stackViewport = renderingEngine.getStackViewports()[0];
-        if (!stackViewport) {
-          throw new Error("Stack viewport not found");
-        }
-
-        try {
-          await stackViewport.setStack(imageIds, 0);
-          stackViewport.render();
-
-          const viewport = renderingEngine.getViewport(viewportId);
-          if (viewport) {
-            viewport.setProperties({
-              voiRange: { lower: 0, upper: 255 },
-              interpolationType: cornerstone.Enums.InterpolationType.LINEAR,
-              invert: false,
-            });
-            viewport.resetCamera();
-            viewport.render();
-          }
-
-          console.log("Stack viewport initialized:", {
-            imageIds: imageIds.length,
-            currentImageId: stackViewport.getCurrentImageId(),
-            properties: stackViewport.getProperties(),
-          });
-        } catch (error) {
-          console.error("Error loading stack images:", error);
-          return;
-        }
-
-        // Initialize tools
-        initializeTools();
-
-        // Force re-render
-        setTimeout(() => {
-          renderingEngine.resize();
-          renderingEngine.render();
-          console.log("Viewport re-rendered");
-        }, 100);
-
-        setIsInitialized(true);
-        console.log("Initialization complete, isInitialized set to true");
-      } catch (error) {
-        console.error("Error initializing Cornerstone:", error);
-        isMountedRef.current = false;
-      }
-    };
-
-    initializeCornerstone();
-
+    initializeCornerstone(imageIds);
+    fetchStudy("e38b2cea-2661291f-46d12e11-02438677-890941a4");
     return () => {
       console.log("Cleaning up Cornerstone...");
       isMountedRef.current = false;
@@ -611,23 +613,52 @@ const CornerstoneViewer = () => {
 
         <div className="mb-6 space-y-4">
           <div className="bg-white p-4 rounded-lg shadow">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Slice Index: {sliceIndex}
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="12"
-              value={sliceIndex}
-              onChange={handleSliceChange}
-              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-              disabled={!isInitialized}
-            />
+            <div className=" text-xs text-gray-600">
+              <p>Mouse controls:</p>
+              <ul className="mt-1 space-y-1">
+                <li>• Left click: Active tool</li>
+                <li>• Middle click: Pan (always)</li>
+                <li>• Right click: Zoom (always)</li>
+                <li>• Scroll wheel: Change slice</li>
+              </ul>
+            </div>
           </div>
+        </div>
 
-          <div className="bg-white p-4 rounded-lg shadow">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Tools</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="justify-center flex">
+          <div className=" h-[500px] z-50 w-[150px] bottom-0 py-4 bg-[#050615]">
+            <p className="text-gray-300 text-sm px-4">Studies:</p>
+            <div className="flex flex-col gap-4 mt-4 px-4 overflow-y-scroll h-[calc(100%-2rem)] ">
+              {study?.map((item, index) => {
+                console.log(selectedInstance);
+                const selected = index === selectedInstance ? true : false;
+                console.log(selected);
+                return (
+                  <div
+                    onClick={() => setSelectedInstance(index)}
+                    key={index}
+                    className={`bg-gray-900 w-full aspect-square bg-white flex-shrink-0 hover:cursor-pointer hover:scale-105 hover:rounded-sm transition-all relative ${
+                      selected
+                        ? "border-2 border-blue-400 shadow-lg shadow-cyan-400/30 rounded-md"
+                        : "border border-gray-200 hover:border-gray-300"
+                    }`}
+                  >
+                    {selected && (
+                      <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs font-medium px-2 py-1 rounded-full shadow-md z-10">
+                        Selected
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div
+            ref={element1Ref}
+            style={{ width: "500px", height: "500px" }}
+            className=" relative"
+          >
+            <div className="absolute top-0 left-0 right-0 h-[40px] bg-[#050615] flex items-center justify-center gap-4 z-50">
               <button
                 onClick={() => setActiveTool("WindowLevel")}
                 className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
@@ -673,37 +704,17 @@ const CornerstoneViewer = () => {
                 Length
               </button>
             </div>
-            <div className="mt-3 text-xs text-gray-600">
-              <p>Mouse controls:</p>
-              <ul className="mt-1 space-y-1">
-                <li>• Left click: Active tool</li>
-                <li>• Middle click: Pan (always)</li>
-                <li>• Right click: Zoom (always)</li>
-                <li>• Scroll wheel: Change slice</li>
-              </ul>
-            </div>
           </div>
         </div>
-
-        <div className="space-y-6">
-          <div className="bg-white p-4 rounded-lg shadow">
-            <h2 className="text-xl font-semibold mb-2">Stack Viewport</h2>
-            <div
-              ref={element1Ref}
-              style={{ width: "500px", height: "500px" }}
-              className="border border-gray-300 mx-auto"
-            />
-          </div>
-        </div>
-
-        {!isInitialized && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-            <div className="bg-white p-6 rounded-lg">
-              <p className="text-lg">Loading Cornerstone.js...</p>
-            </div>
-          </div>
-        )}
       </div>
+
+      {!isInitialized && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-lg">
+            <p className="text-lg">Loading Cornerstone.js...</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
