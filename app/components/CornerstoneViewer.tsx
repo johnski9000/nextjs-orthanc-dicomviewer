@@ -206,6 +206,87 @@ const CornerstoneViewer = () => {
   const renderingEngineId = "myRenderingEngine";
   const viewportId = "COLOR_STACK";
 
+  // Fullscreen functions
+  const enterFullscreen = () => {
+    const element = fullscreenContainerRef.current;
+    if (element) {
+      if (element.requestFullscreen) {
+        element.requestFullscreen();
+      } else if (element.webkitRequestFullscreen) {
+        element.webkitRequestFullscreen();
+      } else if (element.msRequestFullscreen) {
+        element.msRequestFullscreen();
+      }
+      setIsFullscreen(true);
+
+      // Resize the rendering engine after entering fullscreen
+      setTimeout(() => {
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.resize();
+          renderingEngineRef.current.render();
+        }
+      }, 100);
+    }
+  };
+
+  const exitFullscreen = () => {
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    } else if (document.msExitFullscreen) {
+      document.msExitFullscreen();
+    }
+    setIsFullscreen(false);
+
+    // Resize the rendering engine after exiting fullscreen
+    setTimeout(() => {
+      if (renderingEngineRef.current) {
+        renderingEngineRef.current.resize();
+        renderingEngineRef.current.render();
+      }
+    }, 100);
+  };
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.msFullscreenElement
+      );
+
+      if (isCurrentlyFullscreen !== isFullscreen) {
+        setIsFullscreen(isCurrentlyFullscreen);
+
+        // Resize the rendering engine when fullscreen state changes
+        setTimeout(() => {
+          if (renderingEngineRef.current) {
+            renderingEngineRef.current.resize();
+            renderingEngineRef.current.render();
+          }
+        }, 100);
+      }
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    document.addEventListener("msfullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        handleFullscreenChange
+      );
+      document.removeEventListener(
+        "msfullscreenchange",
+        handleFullscreenChange
+      );
+    };
+  }, [isFullscreen]);
+
   // Helper function to extract instance ID from URL
   const extractInstanceId = (url) => {
     const match = url.match(/instances\/([a-f0-9-]+)\//);
@@ -476,6 +557,7 @@ const CornerstoneViewer = () => {
       }
     }
   };
+
   useEffect(() => {
     if (isMountedRef.current) return;
     isMountedRef.current = true;
@@ -629,6 +711,7 @@ const CornerstoneViewer = () => {
     // Use local proxy for thumbnails too
     return `/api/dicom-proxy?instanceId=${instanceId}`;
   };
+
   // Hardcoded array of tool keys
   const toolKeys = [
     "WindowLevel",
@@ -650,6 +733,7 @@ const CornerstoneViewer = () => {
     Elliptical: { icon: IconCircle, label: "Elliptical ROI Tool" },
     Rectangle: { icon: IconRectangle, label: "Rectangle ROI Tool" },
   };
+
   return (
     <div
       ref={fullscreenContainerRef}
@@ -686,10 +770,10 @@ const CornerstoneViewer = () => {
         <div className="flex flex-col items-center h-full">
           {/* Toolbar */}
           <div
-            className={`flex items-center gap-4 mb-4 ${
+            className={`flex items-center justify-between px-4 gap-4 ${
               isFullscreen
                 ? "absolute top-4 left-1/2 transform -translate-x-1/2 z-10"
-                : ""
+                : "w-full max-w-[700px] mx-auto bg-[#050513]"
             }`}
           >
             {/* Tools Menu for smaller screens / fullscreen */}
@@ -815,7 +899,9 @@ const CornerstoneViewer = () => {
           {/* Main viewer area */}
           <div
             className={`flex ${
-              isFullscreen ? "h-full w-full" : "justify-center min-h-[400px]"
+              isFullscreen
+                ? "h-full w-full"
+                : "justify-center min-h-[400px] max-h-[500px]"
             }`}
           >
             {/* Series panel */}
@@ -845,11 +931,14 @@ const CornerstoneViewer = () => {
                 </Button>
 
                 <Collapse in={!seriesCollapsed}>
-                  <div className="p-4 h-full flex flex-col">
-                    <p className="text-gray-300 text-sm mb-4 font-medium">
-                      Series
-                    </p>
-                    <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
+                  <div className="flex flex-col h-full">
+                    <div className="p-4 pb-2 flex-shrink-0">
+                      <p className="text-gray-300 text-sm font-medium">
+                        Series
+                      </p>
+                    </div>
+                    {/* Scrollable container */}
+                    <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800 px-4 pb-4">
                       <div className="space-y-3 pr-2">
                         {study?.map((series, index) => {
                           const selected = index === selectedSeriesIndex;
