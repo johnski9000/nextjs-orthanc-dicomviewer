@@ -3,202 +3,141 @@ import React, { useEffect, useRef, useState } from "react";
 import * as cornerstone from "@cornerstonejs/core";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 
-// Web Image Loader
-const registerWebImageLoader = (imageLoader) => {
-  const canvas = document.createElement("canvas");
-  let lastImageIdDrawn;
+import {
+  ActionIcon,
+  Group,
+  Tooltip,
+  Menu,
+  Button,
+  Collapse,
+} from "@mantine/core";
+import {
+  IconAdjustments,
+  IconHandMove,
+  IconZoomIn,
+  IconRuler,
+  IconRotateClockwise,
+  IconCircle,
+  IconRectangle,
+  IconRefresh,
+  IconMaximize,
+  IconMinimize,
+  IconChevronLeft,
+  IconChevronRight,
+  IconMenu2,
+} from "@tabler/icons-react";
 
-  function createImage(image, imageId) {
-    const rows = image.naturalHeight;
-    const columns = image.naturalWidth;
-
-    function getPixelData(targetBuffer) {
-      const imageData = getImageData();
-      let targetArray;
-
-      if (targetBuffer) {
-        targetArray = new Uint8Array(
-          targetBuffer.arrayBuffer,
-          targetBuffer.offset,
-          targetBuffer.length
-        );
-      } else {
-        targetArray = new Uint8Array(imageData.width * imageData.height * 3);
-      }
-
-      convertImageDataToRGB(imageData, targetArray);
-      return targetArray;
-    }
-
-    function convertImageDataToRGB(imageData, targetArray) {
-      for (let i = 0, j = 0; i < imageData.data.length; i += 4, j += 3) {
-        targetArray[j] = imageData.data[i];
-        targetArray[j + 1] = imageData.data[i + 1];
-        targetArray[j + 2] = imageData.data[i + 2];
-      }
-    }
-
-    function getImageData() {
-      let context;
-      if (lastImageIdDrawn === imageId) {
-        context = canvas.getContext("2d", { willReadFrequently: true });
-      } else {
-        canvas.height = image.naturalHeight;
-        canvas.width = image.naturalWidth;
-        context = canvas.getContext("2d", { willReadFrequently: true });
-        context.drawImage(image, 0, 0);
-        lastImageIdDrawn = imageId;
-      }
-      return context.getImageData(
-        0,
-        0,
-        image.naturalWidth,
-        image.naturalHeight
-      );
-    }
-
-    function getCanvas() {
-      if (lastImageIdDrawn === imageId) {
-        return canvas;
-      }
-      canvas.height = image.naturalHeight;
-      canvas.width = image.naturalWidth;
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      context.drawImage(image, 0, 0);
-      lastImageIdDrawn = imageId;
-      return canvas;
-    }
-
-    return {
-      imageId,
-      minPixelValue: 0,
-      maxPixelValue: 255,
-      slope: 1,
-      intercept: 0,
-      windowCenter: 128,
-      windowWidth: 255,
-      getPixelData,
-      getCanvas,
-      getImage: () => image,
-      rows,
-      columns,
-      height: rows,
-      width: columns,
-      color: true,
-      rgba: false,
-      columnPixelSpacing: 1,
-      rowPixelSpacing: 1,
-      invert: false,
-      sizeInBytes: rows * columns * 3,
-      numberOfComponents: 3,
-    };
-  }
-
-  function arrayBufferToImage(arrayBuffer) {
-    return new Promise((resolve, reject) => {
-      const image = new Image();
-      const arrayBufferView = new Uint8Array(arrayBuffer);
-      const blob = new Blob([arrayBufferView]);
-      const urlCreator = window.URL || window.webkitURL;
-      const imageUrl = urlCreator.createObjectURL(blob);
-
-      image.src = imageUrl;
-      image.onload = () => {
-        resolve(image);
-        urlCreator.revokeObjectURL(imageUrl);
-      };
-      image.onerror = (error) => {
-        urlCreator.revokeObjectURL(imageUrl);
-        reject(error);
-      };
-    });
-  }
-
-  function loadImage(uri, imageId) {
-    const xhr = new XMLHttpRequest();
-    xhr.open("GET", uri, true);
-    xhr.responseType = "arraybuffer";
-
-    xhr.onprogress = function (oProgress) {
-      if (oProgress.lengthComputable) {
-        const loaded = oProgress.loaded;
-        const total = oProgress.total;
-        const percentComplete = Math.round((loaded / total) * 100);
-
-        const eventDetail = {
-          imageId,
-          loaded,
-          total,
-          percentComplete,
-        };
-
-        cornerstone.triggerEvent(
-          cornerstone.eventTarget,
-          "cornerstoneimageloadprogress",
-          eventDetail
-        );
-      }
-    };
+// DICOM Image Loader
+const registerDICOMImageLoader = (imageLoader) => {
+  const loadImage = (imageId) => {
+    const canvas = document.createElement("canvas");
+    const url = imageId.replace("dicomweb:", "");
 
     const promise = new Promise((resolve, reject) => {
-      xhr.onload = function () {
-        const imagePromise = arrayBufferToImage(this.response);
-        imagePromise
-          .then((image) => {
-            const imageObject = createImage(image, imageId);
-            resolve(imageObject);
-          }, reject)
-          .catch((error) => {
-            console.error(error);
-          });
-      };
-      xhr.onerror = function (error) {
-        reject(error);
-      };
-      xhr.send();
-    });
-
-    const cancelFn = () => {
-      xhr.abort();
-    };
-
-    return { promise, cancelFn };
-  }
-
-  function _loadImageIntoBuffer(imageId, options) {
-    const uri = imageId.replace("web:", "");
-
-    const promise = new Promise((resolve, reject) => {
-      loadImage(uri, imageId)
-        .promise.then(
-          (image) => {
-            if (
-              !options?.targetBuffer?.length ||
-              !options?.targetBuffer?.offset
-            ) {
-              resolve(image);
-              return;
-            }
-            image.getPixelData(options.targetBuffer);
-            resolve(true);
-          },
-          (error) => {
-            reject(error);
+      // First try to fetch with credentials
+      fetch(url, {
+        method: "GET",
+        credentials: "include", // Include cookies if any
+        headers: {
+          // Add any authentication headers your server requires
+          // For example:
+          // 'Authorization': 'Bearer YOUR_TOKEN_HERE',
+          // OR if using basic auth:
+          // 'Authorization': 'Basic ' + btoa('username:password'),
+        },
+      })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
           }
-        )
+          return response.blob();
+        })
+        .then((blob) => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          const objectUrl = URL.createObjectURL(blob);
+
+          img.onload = function () {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+
+            const imageData = ctx.getImageData(
+              0,
+              0,
+              img.naturalWidth,
+              img.naturalHeight
+            );
+
+            function getPixelData() {
+              const pixelData = new Uint8Array(
+                img.naturalWidth * img.naturalHeight * 3
+              );
+              const data = imageData.data;
+              let j = 0;
+              for (let i = 0; i < data.length; i += 4) {
+                pixelData[j++] = data[i];
+                pixelData[j++] = data[i + 1];
+                pixelData[j++] = data[i + 2];
+              }
+              return pixelData;
+            }
+
+            const image = {
+              imageId: imageId,
+              minPixelValue: 0,
+              maxPixelValue: 255,
+              slope: 1,
+              intercept: 0,
+              windowCenter: 128,
+              windowWidth: 255,
+              getPixelData,
+              getCanvas: () => canvas,
+              getImage: () => img,
+              rows: img.naturalHeight,
+              columns: img.naturalWidth,
+              height: img.naturalHeight,
+              width: img.naturalWidth,
+              color: true,
+              rgba: false,
+              columnPixelSpacing: 1,
+              rowPixelSpacing: 1,
+              invert: false,
+              sizeInBytes: img.naturalWidth * img.naturalHeight * 3,
+              numberOfComponents: 3,
+            };
+
+            URL.revokeObjectURL(objectUrl);
+            resolve(image);
+          };
+
+          img.onerror = function (error) {
+            URL.revokeObjectURL(objectUrl);
+            reject(error);
+          };
+
+          img.src = objectUrl;
+        })
         .catch((error) => {
+          console.error("Error fetching image:", error);
           reject(error);
         });
     });
 
-    return { promise, cancelFn: undefined };
-  }
+    return {
+      promise,
+      cancelFn: () => {},
+    };
+  };
 
-  imageLoader.registerImageLoader("web", _loadImageIntoBuffer);
+  imageLoader.registerImageLoader("dicomweb", loadImage);
 };
 
 // Metadata Provider
-const hardcodedMetaDataProvider = (type, imageId, imageIds) => {
+const metaDataProvider = (type, imageId, imageIds) => {
+  const index = imageIds ? imageIds.indexOf(imageId) : 0;
+
   if (type === "imagePixelModule") {
     return {
       pixelRepresentation: 0,
@@ -210,15 +149,18 @@ const hardcodedMetaDataProvider = (type, imageId, imageIds) => {
     };
   } else if (type === "generalSeriesModule") {
     return {
-      modality: "SC",
+      modality: "CT",
       seriesNumber: 1,
-      seriesDescription: "Color",
-      seriesDate: "20190201",
-      seriesTime: "120000",
-      seriesInstanceUID: "1.2.276.0.7230010.3.1.4.83233.20190201120000.1",
+      seriesDescription: "Medical Image",
+      seriesDate: new Date().toISOString().split("T")[0].replace(/-/g, ""),
+      seriesTime: new Date()
+        .toISOString()
+        .split("T")[1]
+        .replace(/[:.]/g, "")
+        .substr(0, 6),
+      seriesInstanceUID: "1.2.276.0.7230010.3.1.4.83233." + Date.now(),
     };
   } else if (type === "imagePlaneModule") {
-    const index = imageIds.indexOf(imageId);
     return {
       imageOrientationPatient: [1, 0, 0, 0, 1, 0],
       imagePositionPatient: [0, 0, index * 5],
@@ -226,8 +168,8 @@ const hardcodedMetaDataProvider = (type, imageId, imageIds) => {
       columnPixelSpacing: 1,
       rowPixelSpacing: 1,
       frameOfReferenceUID: "FORUID",
-      columns: 2048,
-      rows: 1216,
+      columns: 512,
+      rows: 512,
       rowCosines: [1, 0, 0],
       columnCosines: [0, 1, 0],
       usingDefaultValues: true,
@@ -247,35 +189,36 @@ const hardcodedMetaDataProvider = (type, imageId, imageIds) => {
 };
 
 const CornerstoneViewer = () => {
-  const [sliceIndex, setSliceIndex] = useState(0);
-  const [selectedInstance, setSelectedInstance] = useState(null);
+  const [selectedSeriesIndex, setSelectedSeriesIndex] = useState(0);
   const [study, setStudy] = useState(null);
-  console.log("study", study);
+  const [loading, setLoading] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [activeToolName, setActiveToolName] = useState("WindowLevel");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [seriesCollapsed, setSeriesCollapsed] = useState(false);
+
   const element1Ref = useRef(null);
   const renderingEngineRef = useRef(null);
   const toolGroupRef = useRef(null);
   const isMountedRef = useRef(false);
+  const fullscreenContainerRef = useRef(null);
 
   const renderingEngineId = "myRenderingEngine";
   const viewportId = "COLOR_STACK";
 
-  const imageIds = [
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1460.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1461.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1462.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1463.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1464.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1465.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1466.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1467.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1468.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1469.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1470.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1471.png",
-    "web:https://cs3d-jpg-example.s3.us-east-2.amazonaws.com/a_vm1472.png",
-  ];
+  // Helper function to extract instance ID from URL
+  const extractInstanceId = (url) => {
+    const match = url.match(/instances\/([a-f0-9-]+)\//);
+    return match ? match[1] : null;
+  };
+
+  // Helper function to create DICOM image URL
+  const createDicomImageUrl = (instanceUrl) => {
+    const instanceId = extractInstanceId(instanceUrl);
+    if (!instanceId) return null;
+    // Use local proxy endpoint instead of direct URL
+    return `dicomweb:/api/dicom-proxy?instanceId=${instanceId}`;
+  };
 
   // Debug mouse events
   useEffect(() => {
@@ -294,24 +237,35 @@ const CornerstoneViewer = () => {
       element.removeEventListener("mousedown", handleMouseDown);
     };
   }, [activeToolName]);
-  const fetchStudy = async (study) => {
+
+  const fetchStudy = async (studyId) => {
     try {
+      setLoading(true);
       const data = await fetch("/api/getStudyData", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          studyId: study,
+          studyId: studyId,
         }),
       });
       const response = await data.json();
       setStudy(response.studies[0].series);
-      setSelectedInstance(0);
+      setSelectedSeriesIndex(0);
+
+      // Initialize with the first series
+      if (response.studies[0].series.length > 0) {
+        const firstSeries = response.studies[0].series[0];
+        await initializeWithSeries(firstSeries);
+      }
     } catch (error) {
-      console.log(error);
+      console.error("Error fetching study:", error);
+    } finally {
+      setLoading(false);
     }
   };
+
   const initializeTools = () => {
     try {
       console.log("Initializing tools...");
@@ -321,6 +275,9 @@ const CornerstoneViewer = () => {
       cornerstoneTools.addTool(cornerstoneTools.ZoomTool);
       cornerstoneTools.addTool(cornerstoneTools.StackScrollTool);
       cornerstoneTools.addTool(cornerstoneTools.LengthTool);
+      cornerstoneTools.addTool(cornerstoneTools.PlanarRotateTool);
+      cornerstoneTools.addTool(cornerstoneTools.EllipticalROITool);
+      cornerstoneTools.addTool(cornerstoneTools.RectangleROITool);
       console.log("Tools added to cornerstoneTools");
 
       const toolGroupId = "myToolGroup";
@@ -343,12 +300,20 @@ const CornerstoneViewer = () => {
         throw new Error("StackScrollTool.toolName undefined");
       if (!cornerstoneTools.LengthTool.toolName)
         throw new Error("LengthTool.toolName undefined");
-
+      if (!cornerstoneTools.PlanarRotateTool.toolName)
+        throw new Error("PlanarRotateTool.toolName undefined");
+      if (!cornerstoneTools.EllipticalROITool.toolName)
+        throw new Error("EllipticalROITool.toolName undefined");
+      if (!cornerstoneTools.RectangleROITool.toolName)
+        throw new Error("RectangleROITool.toolName undefined");
       toolGroup.addTool(cornerstoneTools.WindowLevelTool.toolName);
       toolGroup.addTool(cornerstoneTools.PanTool.toolName);
       toolGroup.addTool(cornerstoneTools.ZoomTool.toolName);
       toolGroup.addTool(cornerstoneTools.StackScrollTool.toolName);
       toolGroup.addTool(cornerstoneTools.LengthTool.toolName);
+      toolGroup.addTool(cornerstoneTools.PlanarRotateTool.toolName);
+      toolGroup.addTool(cornerstoneTools.EllipticalROITool.toolName);
+      toolGroup.addTool(cornerstoneTools.RectangleROITool.toolName);
       console.log("Tools added to tool group");
 
       // Add viewport to the tool group
@@ -375,6 +340,9 @@ const CornerstoneViewer = () => {
         bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel }],
       });
       toolGroup.setToolPassive(cornerstoneTools.LengthTool.toolName);
+      toolGroup.setToolPassive(cornerstoneTools.PlanarRotateTool.toolName);
+      toolGroup.setToolPassive(cornerstoneTools.EllipticalROITool.toolName);
+      toolGroup.setToolPassive(cornerstoneTools.RectangleROITool.toolName);
       console.log("Initial tool modes set");
 
       console.log("Tools initialized successfully");
@@ -383,6 +351,26 @@ const CornerstoneViewer = () => {
       toolGroupRef.current = null;
     }
   };
+
+  const initializeWithSeries = async (series) => {
+    if (!series || !series.instances || series.instances.length === 0) {
+      console.error("No instances available in series");
+      return;
+    }
+
+    // Create image IDs from the series instances
+    const imageIds = series.instances
+      .map((instance) => createDicomImageUrl(instance.url))
+      .filter((url) => url !== null);
+
+    if (imageIds.length === 0) {
+      console.error("No valid image IDs created");
+      return;
+    }
+
+    await initializeCornerstone(imageIds);
+  };
+
   const initializeCornerstone = async (imageStack) => {
     if (typeof window === "undefined" || !element1Ref.current) return;
 
@@ -402,12 +390,12 @@ const CornerstoneViewer = () => {
         console.log(`${toolKey}.toolName:`, tool?.toolName || "undefined");
       });
 
-      // Register web image loader
-      registerWebImageLoader(cornerstone.imageLoader);
+      // Register DICOM image loader
+      registerDICOMImageLoader(cornerstone.imageLoader);
 
       // Add metadata provider
       cornerstone.metaData.addProvider(
-        (type, imageId) => hardcodedMetaDataProvider(type, imageId, imageIds),
+        (type, imageId) => metaDataProvider(type, imageId, imageStack),
         10000
       );
 
@@ -472,12 +460,28 @@ const CornerstoneViewer = () => {
       isMountedRef.current = false;
     }
   };
+
+  const resetViewport = () => {
+    if (renderingEngineRef.current) {
+      const viewport = renderingEngineRef.current.getViewport(viewportId);
+      if (viewport) {
+        // Remove all annotations
+        cornerstoneTools.annotation.state.removeAllAnnotations();
+
+        // Reset camera to original position/zoom
+        viewport.resetCamera();
+
+        // Re-render to update the display
+        viewport.render();
+      }
+    }
+  };
   useEffect(() => {
-    if (isMountedRef.current) return; // Prevent double initialization
+    if (isMountedRef.current) return;
     isMountedRef.current = true;
 
-    initializeCornerstone(imageIds);
     fetchStudy("e38b2cea-2661291f-46d12e11-02438677-890941a4");
+
     return () => {
       console.log("Cleaning up Cornerstone...");
       isMountedRef.current = false;
@@ -486,15 +490,38 @@ const CornerstoneViewer = () => {
           toolGroupRef.current.id
         );
         toolGroupRef.current = null;
-        console.log("Tool group destroyed");
       }
       if (renderingEngineRef.current) {
         renderingEngineRef.current.destroy();
         renderingEngineRef.current = null;
-        console.log("Rendering engine destroyed");
       }
     };
   }, []);
+
+  const handleSeriesClick = async (seriesIndex) => {
+    setSelectedSeriesIndex(seriesIndex);
+
+    const selectedSeries = study[seriesIndex];
+    if (selectedSeries) {
+      // Destroy existing tool group
+      if (toolGroupRef.current) {
+        cornerstoneTools.ToolGroupManager.destroyToolGroup(
+          toolGroupRef.current.id
+        );
+        toolGroupRef.current = null;
+      }
+
+      // Destroy existing rendering engine
+      if (renderingEngineRef.current) {
+        renderingEngineRef.current.destroy();
+        renderingEngineRef.current = null;
+      }
+
+      // Reinitialize with new series
+      setIsInitialized(false);
+      await initializeWithSeries(selectedSeries);
+    }
+  };
 
   const setActiveTool = (toolName) => {
     if (!isInitialized) {
@@ -514,6 +541,9 @@ const CornerstoneViewer = () => {
       Pan: cornerstoneTools.PanTool.toolName,
       Zoom: cornerstoneTools.ZoomTool.toolName,
       Length: cornerstoneTools.LengthTool.toolName,
+      Rotate: cornerstoneTools.PlanarRotateTool.toolName,
+      Elliptical: cornerstoneTools.EllipticalROITool.toolName,
+      Rectangle: cornerstoneTools.RectangleROITool.toolName,
     };
 
     const actualToolName = toolNameMap[toolName];
@@ -536,6 +566,9 @@ const CornerstoneViewer = () => {
       cornerstoneTools.PanTool.toolName,
       cornerstoneTools.ZoomTool.toolName,
       cornerstoneTools.LengthTool.toolName,
+      cornerstoneTools.PlanarRotateTool.toolName,
+      cornerstoneTools.EllipticalROITool.toolName,
+      cornerstoneTools.RectangleROITool.toolName,
     ];
 
     allTools.forEach((tool) => {
@@ -589,129 +622,302 @@ const CornerstoneViewer = () => {
     }
   };
 
-  const handleSliceChange = (e) => {
-    const newIndex = parseInt(e.target.value);
-    setSliceIndex(newIndex);
-
-    if (renderingEngineRef.current) {
-      const viewport = renderingEngineRef.current.getViewport(viewportId);
-      if (viewport && viewport.setImageIdIndex) {
-        viewport.setImageIdIndex(newIndex);
-        viewport.render();
-      }
-    }
+  // Helper to create preview URL for thumbnails
+  const createPreviewUrl = (instanceUrl) => {
+    const instanceId = extractInstanceId(instanceUrl);
+    if (!instanceId) return null;
+    // Use local proxy for thumbnails too
+    return `/api/dicom-proxy?instanceId=${instanceId}`;
   };
+  // Hardcoded array of tool keys
+  const toolKeys = [
+    "WindowLevel",
+    "Pan",
+    "Zoom",
+    "Length",
+    "Rotate",
+    "Elliptical",
+    "Rectangle",
+  ];
 
+  // Tool configuration with icons and labels
+  const toolConfig = {
+    WindowLevel: { icon: IconAdjustments, label: "Window/Level" },
+    Pan: { icon: IconHandMove, label: "Pan" },
+    Zoom: { icon: IconZoomIn, label: "Zoom" },
+    Length: { icon: IconRuler, label: "Length" },
+    Rotate: { icon: IconRotateClockwise, label: "Planar Rotate Tool" },
+    Elliptical: { icon: IconCircle, label: "Elliptical ROI Tool" },
+    Rectangle: { icon: IconRectangle, label: "Rectangle ROI Tool" },
+  };
   return (
-    <div className="p-8 bg-gray-100 min-h-screen">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold mb-2">Web Color Images Viewer</h1>
-        <p className="text-gray-600 mb-6">
-          Demonstrates how to render web color images in JPG or PNG format using
-          Cornerstone.js
-        </p>
+    <div
+      ref={fullscreenContainerRef}
+      className={`${
+        isFullscreen
+          ? "fixed inset-0 z-50 bg-black"
+          : "p-8 bg-gray-100 min-h-screen"
+      }`}
+    >
+      <div className={`${isFullscreen ? "h-full" : "max-w-7xl mx-auto"}`}>
+        {!isFullscreen && (
+          <>
+            <h1 className="text-3xl font-bold mb-2">DICOM Viewer</h1>
+            <p className="text-gray-600 mb-6">
+              Medical imaging viewer using Cornerstone.js
+            </p>
 
-        <div className="mb-6 space-y-4">
-          <div className="bg-white p-4 rounded-lg shadow">
-            <div className=" text-xs text-gray-600">
-              <p>Mouse controls:</p>
-              <ul className="mt-1 space-y-1">
-                <li>• Left click: Active tool</li>
-                <li>• Middle click: Pan (always)</li>
-                <li>• Right click: Zoom (always)</li>
-                <li>• Scroll wheel: Change slice</li>
-              </ul>
+            <div className="mb-6 space-y-4">
+              <div className="bg-white p-4 rounded-lg shadow">
+                <div className="text-xs text-gray-600">
+                  <p>Mouse controls:</p>
+                  <ul className="mt-1 space-y-1">
+                    <li>• Left click: Active tool</li>
+                    <li>• Middle click: Pan (always)</li>
+                    <li>• Right click: Zoom (always)</li>
+                    <li>• Scroll wheel: Change slice</li>
+                  </ul>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
 
-        <div className="justify-center flex">
-          <div className=" h-[500px] z-50 w-[150px] bottom-0 py-4 bg-[#050615]">
-            <p className="text-gray-300 text-sm px-4">Studies:</p>
-            <div className="flex flex-col gap-4 mt-4 px-4 overflow-y-scroll h-[calc(100%-2rem)] ">
-              {study?.map((item, index) => {
-                console.log(selectedInstance);
-                const selected = index === selectedInstance ? true : false;
-                console.log(selected);
+        <div className="flex flex-col items-center h-full">
+          {/* Toolbar */}
+          <div
+            className={`flex items-center gap-4 mb-4 ${
+              isFullscreen
+                ? "absolute top-4 left-1/2 transform -translate-x-1/2 z-10"
+                : ""
+            }`}
+          >
+            {/* Tools Menu for smaller screens / fullscreen */}
+            <Menu shadow="md" width={200}>
+              <Menu.Target>
+                <ActionIcon
+                  variant="filled"
+                  color="dark"
+                  size="lg"
+                  className="md:hidden"
+                >
+                  <IconMenu2 size={18} />
+                </ActionIcon>
+              </Menu.Target>
+
+              <Menu.Dropdown>
+                <Menu.Label>Tools</Menu.Label>
+                {toolKeys.map((toolKey) => {
+                  const { label } = toolConfig[toolKey];
+                  const isActive = activeToolName === toolKey;
+
+                  return (
+                    <Menu.Item
+                      key={toolKey}
+                      onClick={() => setActiveTool(toolKey)}
+                      color={isActive ? "blue" : undefined}
+                      disabled={!isInitialized}
+                    >
+                      {label}
+                    </Menu.Item>
+                  );
+                })}
+                <Menu.Divider />
+                <Menu.Item
+                  onClick={() => resetViewport()}
+                  disabled={!isInitialized}
+                >
+                  Reset
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+
+            {/* Desktop toolbar */}
+            <Group
+              className={`h-[50px] bg-[#050615] rounded-lg px-4 hidden md:flex ${
+                isFullscreen ? "bg-opacity-90" : ""
+              }`}
+              gap="xs"
+            >
+              {toolKeys.map((toolKey) => {
+                const { icon: Icon, label } = toolConfig[toolKey];
+                const isActive = activeToolName === toolKey;
+
                 return (
-                  <div
-                    onClick={() => setSelectedInstance(index)}
-                    key={index}
-                    className={`bg-gray-900 w-full aspect-square bg-white flex-shrink-0 hover:cursor-pointer hover:scale-105 hover:rounded-sm transition-all relative ${
-                      selected
-                        ? "border-2 border-blue-400 shadow-lg shadow-cyan-400/30 rounded-md"
-                        : "border border-gray-200 hover:border-gray-300"
-                    }`}
-                  >
-                    {selected && (
-                      <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs font-medium px-2 py-1 rounded-full shadow-md z-10">
-                        Selected
-                      </div>
-                    )}
-                  </div>
+                  <Tooltip key={toolKey} label={label}>
+                    <ActionIcon
+                      onClick={() => setActiveTool(toolKey)}
+                      variant={isActive ? "filled" : "default"}
+                      color={isActive ? "blue" : "gray"}
+                      disabled={!isInitialized}
+                      size="md"
+                    >
+                      <Icon size={16} />
+                    </ActionIcon>
+                  </Tooltip>
                 );
               })}
-            </div>
+
+              <div className="w-px h-6 bg-gray-600 mx-2" />
+
+              <Tooltip label="Reset">
+                <ActionIcon
+                  onClick={() => resetViewport()}
+                  variant="default"
+                  color="gray"
+                  disabled={!isInitialized}
+                  size="md"
+                >
+                  <IconRefresh size={16} />
+                </ActionIcon>
+              </Tooltip>
+
+              <Tooltip
+                label={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+              >
+                <ActionIcon
+                  onClick={isFullscreen ? exitFullscreen : enterFullscreen}
+                  variant="default"
+                  color="gray"
+                  disabled={!isInitialized}
+                  size="md"
+                >
+                  {isFullscreen ? (
+                    <IconMinimize size={16} />
+                  ) : (
+                    <IconMaximize size={16} />
+                  )}
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+
+            {/* Mobile fullscreen button */}
+            <Tooltip
+              label={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+            >
+              <ActionIcon
+                onClick={isFullscreen ? exitFullscreen : enterFullscreen}
+                variant="filled"
+                color="dark"
+                disabled={!isInitialized}
+                size="lg"
+                className="md:hidden"
+              >
+                {isFullscreen ? (
+                  <IconMinimize size={18} />
+                ) : (
+                  <IconMaximize size={18} />
+                )}
+              </ActionIcon>
+            </Tooltip>
           </div>
+
+          {/* Main viewer area */}
           <div
-            ref={element1Ref}
-            style={{ width: "500px", height: "500px" }}
-            className=" relative"
+            className={`flex ${
+              isFullscreen ? "h-full w-full" : "justify-center min-h-[400px]"
+            }`}
           >
-            <div className="absolute top-0 left-0 right-0 h-[40px] bg-[#050615] flex items-center justify-center gap-4 z-50">
-              <button
-                onClick={() => setActiveTool("WindowLevel")}
-                className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
-                  activeToolName === "WindowLevel"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                } ${!isInitialized ? "opacity-50 cursor-not-allowed" : ""}`}
-                disabled={!isInitialized}
+            {/* Series panel */}
+            <div
+              className={`${
+                isFullscreen ? "absolute left-0 top-0 h-full z-10" : "relative"
+              }`}
+            >
+              <div
+                className={`h-full bg-[#050615] transition-all duration-300 flex flex-col ${
+                  seriesCollapsed ? "w-12" : "w-[200px]"
+                } ${isFullscreen ? "bg-opacity-90" : ""}`}
               >
-                Window/Level
-              </button>
-              <button
-                onClick={() => setActiveTool("Pan")}
-                className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
-                  activeToolName === "Pan"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                } ${!isInitialized ? "opacity-50 cursor-not-allowed" : ""}`}
-                disabled={!isInitialized}
-              >
-                Pan
-              </button>
-              <button
-                onClick={() => setActiveTool("Zoom")}
-                className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
-                  activeToolName === "Zoom"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                } ${!isInitialized ? "opacity-50 cursor-not-allowed" : ""}`}
-                disabled={!isInitialized}
-              >
-                Zoom
-              </button>
-              <button
-                onClick={() => setActiveTool("Length")}
-                className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
-                  activeToolName === "Length"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                } ${!isInitialized ? "opacity-50 cursor-not-allowed" : ""}`}
-                disabled={!isInitialized}
-              >
-                Length
-              </button>
+                {/* Toggle button */}
+                <Button
+                  variant="subtle"
+                  color="gray"
+                  size="xs"
+                  className="absolute top-4 -right-3 z-20 rounded-full w-6 h-6 p-0 shadow-md"
+                  onClick={() => setSeriesCollapsed(!seriesCollapsed)}
+                >
+                  {seriesCollapsed ? (
+                    <IconChevronRight size={14} />
+                  ) : (
+                    <IconChevronLeft size={14} />
+                  )}
+                </Button>
+
+                <Collapse in={!seriesCollapsed}>
+                  <div className="p-4 h-full flex flex-col">
+                    <p className="text-gray-300 text-sm mb-4 font-medium">
+                      Series
+                    </p>
+                    <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
+                      <div className="space-y-3 pr-2">
+                        {study?.map((series, index) => {
+                          const selected = index === selectedSeriesIndex;
+                          const firstInstance = series.instances[0];
+                          const previewUrl = firstInstance
+                            ? createPreviewUrl(firstInstance.url)
+                            : null;
+
+                          return (
+                            <div
+                              onClick={() => handleSeriesClick(index)}
+                              key={index}
+                              className={`bg-gray-900 w-full aspect-square flex-shrink-0 cursor-pointer hover:scale-105 transition-all relative overflow-hidden rounded-lg ${
+                                selected
+                                  ? "border-2 border-blue-400 shadow-lg shadow-cyan-400/30"
+                                  : "border border-gray-700 hover:border-gray-500"
+                              }`}
+                            >
+                              {selected && (
+                                <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs font-medium px-2 py-1 rounded-full shadow-md z-10">
+                                  Selected
+                                </div>
+                              )}
+                              {previewUrl && (
+                                <img
+                                  src={previewUrl}
+                                  alt={`Series ${index + 1}`}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    e.target.style.display = "none";
+                                  }}
+                                />
+                              )}
+                              <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 text-white text-xs p-2">
+                                <p className="font-medium">{series.Modality}</p>
+                                <p className="text-gray-300">
+                                  {series.instances.length} images
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </Collapse>
+              </div>
             </div>
+
+            {/* Viewport */}
+            <div
+              ref={element1Ref}
+              className={`relative bg-gray-900 ${
+                isFullscreen
+                  ? `w-full h-full ${seriesCollapsed ? "ml-12" : "ml-[200px]"}`
+                  : "w-[500px] h-[500px] rounded-r-lg"
+              } ${!isFullscreen && !seriesCollapsed ? "border-l-0" : ""}`}
+            />
           </div>
         </div>
       </div>
 
-      {!isInitialized && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="bg-white p-6 rounded-lg">
-            <p className="text-lg">Loading Cornerstone.js...</p>
+      {(loading || !isInitialized) && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-xl">
+            <p className="text-lg">
+              {loading ? "Loading study..." : "Initializing viewer..."}
+            </p>
           </div>
         </div>
       )}
