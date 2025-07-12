@@ -15,81 +15,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Add cache structure
-type CacheEntry struct {
-	Result    *StudyResult
-	Timestamp time.Time
-}
-
-type StudyCache struct {
-	cache map[string]*CacheEntry
-	mutex sync.RWMutex
-	ttl   time.Duration
-}
-
-func NewStudyCache(ttl time.Duration) *StudyCache {
-	return &StudyCache{
-		cache: make(map[string]*CacheEntry),
-		ttl:   ttl,
-	}
-}
-
-func (sc *StudyCache) Get(studyID string) (*StudyResult, bool) {
-	sc.mutex.RLock()
-	defer sc.mutex.RUnlock()
-	
-	entry, exists := sc.cache[studyID]
-	if !exists {
-		return nil, false
-	}
-	
-	// Check if cache entry is still valid
-	if time.Since(entry.Timestamp) > sc.ttl {
-		return nil, false
-	}
-	
-	return entry.Result, true
-}
-
-func (sc *StudyCache) Set(studyID string, result *StudyResult) {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	
-	sc.cache[studyID] = &CacheEntry{
-		Result:    result,
-		Timestamp: time.Now(),
-	}
-	
-	log.Printf("Cached study %s (%d images)", studyID, result.Successful)
-}
-
-func (sc *StudyCache) Clear() {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
-	
-	sc.cache = make(map[string]*CacheEntry)
-	log.Printf("Cache cleared")
-}
-
-func (sc *StudyCache) Stats() (int, int) {
-	sc.mutex.RLock()
-	defer sc.mutex.RUnlock()
-	
-	total := len(sc.cache)
-	valid := 0
-	
-	for _, entry := range sc.cache {
-		if time.Since(entry.Timestamp) <= sc.ttl {
-			valid++
-		}
-	}
-	
-	return total, valid
-}
-
-// Global cache instance
-var studyCache *StudyCache
-
 type DicomFetcher struct {
 	BaseURL   string
 	AuthToken string
@@ -311,18 +236,7 @@ func handleFetchStudy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Received request for study ID: %s", request.StudyID)
-
-	// Check cache first
-	if cachedResult, found := studyCache.Get(request.StudyID); found {
-		log.Printf("Cache HIT for study %s - returning cached data (%d images)", request.StudyID, cachedResult.Successful)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache-Status", "HIT")
-		json.NewEncoder(w).Encode(cachedResult)
-		return
-	}
-
-	log.Printf("Cache MISS for study %s - fetching from server", request.StudyID)
+	log.Printf("Processing study ID: %s", request.StudyID)
 
 	authToken := os.Getenv("ORTHANC_TOKEN")
 	if authToken == "" {
@@ -336,7 +250,6 @@ func handleFetchStudy(w http.ResponseWriter, r *http.Request) {
 		authToken,
 	)
 
-	// Start with adaptive concurrency based on study size
 	log.Printf("Starting to process study: %s", request.StudyID)
 	result, err := fetcher.ProcessStudy(request.StudyID)
 	if err != nil {
@@ -345,42 +258,17 @@ func handleFetchStudy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache the result
-	studyCache.Set(request.StudyID, result)
-
-	log.Printf("Successfully processed study %s: %d/%d images", request.StudyID, result.Successful, result.TotalInstances)
+	log.Printf("Successfully processed study %s: %d/%d images in %.2fs", 
+		request.StudyID, result.Successful, result.TotalInstances, result.ProcessingTime)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache-Status", "MISS")
 	json.NewEncoder(w).Encode(result)
 }
 
-func handleCacheStats(w http.ResponseWriter, r *http.Request) {
+func handleHealth(w http.ResponseWriter, r *http.Request) {
 	enableCors(&w)
-	total, valid := studyCache.Stats()
-	
-	stats := map[string]interface{}{
-		"total_entries": total,
-		"valid_entries": valid,
-		"cache_ttl_hours": 24,
-	}
-	
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
-}
-
-func handleClearCache(w http.ResponseWriter, r *http.Request) {
-	enableCors(&w)
-	
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	
-	studyCache.Clear()
-	
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "cache cleared"})
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 }
 
 func main() {
@@ -388,9 +276,6 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: Could not load .env file: %v", err)
 	}
-
-	// Initialize cache with 24-hour TTL
-	studyCache = NewStudyCache(24 * time.Hour)
 
 	// Verify ORTHANC_TOKEN is set
 	authToken := os.Getenv("ORTHANC_TOKEN")
@@ -401,8 +286,6 @@ func main() {
 
 	http.HandleFunc("/fetch-study", handleFetchStudy)
 	http.HandleFunc("/health", handleHealth)
-	http.HandleFunc("/cache-stats", handleCacheStats)
-	http.HandleFunc("/clear-cache", handleClearCache)
 	
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -413,14 +296,6 @@ func main() {
 	fmt.Println("Endpoints:")
 	fmt.Println("  POST /fetch-study  - Fetch DICOM images for a study")
 	fmt.Println("  GET  /health       - Health check")
-	fmt.Println("  GET  /cache-stats  - Cache statistics")
-	fmt.Println("  POST /clear-cache  - Clear cache")
 	
 	log.Fatal(http.ListenAndServe(":"+port, nil))
-}
-
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	enableCors(&w)
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 }
