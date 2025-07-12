@@ -27,113 +27,6 @@ import {
   IconMenu2,
 } from "@tabler/icons-react";
 
-// DICOM Image Loader
-const registerDICOMImageLoader = (imageLoader) => {
-  const loadImage = (imageId) => {
-    const canvas = document.createElement("canvas");
-    const url = imageId.replace("dicomweb:", "");
-
-    const promise = new Promise((resolve, reject) => {
-      // First try to fetch with credentials
-      fetch(url, {
-        method: "GET",
-        credentials: "include", // Include cookies if any
-        headers: {
-          // Add any authentication headers your server requires
-          // For example:
-          // 'Authorization': 'Bearer YOUR_TOKEN_HERE',
-          // OR if using basic auth:
-          // 'Authorization': 'Basic ' + btoa('username:password'),
-        },
-      })
-        .then((response) => {
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-          return response.blob();
-        })
-        .then((blob) => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          const objectUrl = URL.createObjectURL(blob);
-
-          img.onload = function () {
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(img, 0, 0);
-
-            const imageData = ctx.getImageData(
-              0,
-              0,
-              img.naturalWidth,
-              img.naturalHeight
-            );
-
-            function getPixelData() {
-              const pixelData = new Uint8Array(
-                img.naturalWidth * img.naturalHeight * 3
-              );
-              const data = imageData.data;
-              let j = 0;
-              for (let i = 0; i < data.length; i += 4) {
-                pixelData[j++] = data[i];
-                pixelData[j++] = data[i + 1];
-                pixelData[j++] = data[i + 2];
-              }
-              return pixelData;
-            }
-
-            const image = {
-              imageId: imageId,
-              minPixelValue: 0,
-              maxPixelValue: 255,
-              slope: 1,
-              intercept: 0,
-              windowCenter: 128,
-              windowWidth: 255,
-              getPixelData,
-              getCanvas: () => canvas,
-              getImage: () => img,
-              rows: img.naturalHeight,
-              columns: img.naturalWidth,
-              height: img.naturalHeight,
-              width: img.naturalWidth,
-              color: true,
-              rgba: false,
-              columnPixelSpacing: 1,
-              rowPixelSpacing: 1,
-              invert: false,
-              sizeInBytes: img.naturalWidth * img.naturalHeight * 3,
-              numberOfComponents: 3,
-            };
-
-            URL.revokeObjectURL(objectUrl);
-            resolve(image);
-          };
-
-          img.onerror = function (error) {
-            URL.revokeObjectURL(objectUrl);
-            reject(error);
-          };
-
-          img.src = objectUrl;
-        })
-        .catch((error) => {
-          console.error("Error fetching image:", error);
-          reject(error);
-        });
-    });
-
-    return {
-      promise,
-      cancelFn: () => {},
-    };
-  };
-
-  imageLoader.registerImageLoader("dicomweb", loadImage);
-};
-
 // Metadata Provider
 const metaDataProvider = (type, imageId, imageIds) => {
   const index = imageIds ? imageIds.indexOf(imageId) : 0;
@@ -188,7 +81,8 @@ const metaDataProvider = (type, imageId, imageIds) => {
   return undefined;
 };
 
-const CornerstoneViewer = () => {
+const CornerstoneViewer = (pack) => {
+  console.log("pack", pack);
   const [selectedSeriesIndex, setSelectedSeriesIndex] = useState(0);
   const [study, setStudy] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -196,7 +90,15 @@ const CornerstoneViewer = () => {
   const [activeToolName, setActiveToolName] = useState("WindowLevel");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [seriesCollapsed, setSeriesCollapsed] = useState(false);
-
+  const [prefetchState, setPrefetchState] = useState({
+    isActive: false,
+    current: 0,
+    total: 0,
+    failed: 0,
+    progress: 0,
+  });
+  const imageCache = useRef(new Map());
+  const prefetchAbortController = useRef(null);
   const element1Ref = useRef(null);
   const renderingEngineRef = useRef(null);
   const toolGroupRef = useRef(null);
@@ -291,14 +193,6 @@ const CornerstoneViewer = () => {
   const extractInstanceId = (url) => {
     const match = url.match(/instances\/([a-f0-9-]+)\//);
     return match ? match[1] : null;
-  };
-
-  // Helper function to create DICOM image URL
-  const createDicomImageUrl = (instanceUrl) => {
-    const instanceId = extractInstanceId(instanceUrl);
-    if (!instanceId) return null;
-    // Use local proxy endpoint instead of direct URL
-    return `dicomweb:/api/dicom-proxy?instanceId=${instanceId}`;
   };
 
   // Debug mouse events
@@ -438,12 +332,12 @@ const CornerstoneViewer = () => {
       console.error("No instances available in series");
       return;
     }
-
+    console.log(series.instances);
     // Create image IDs from the series instances
     const imageIds = series.instances
-      .map((instance) => createDicomImageUrl(instance.url))
+      .map((instance) => extractInstanceId(instance.url))
       .filter((url) => url !== null);
-
+    console.log(imageIds);
     if (imageIds.length === 0) {
       console.error("No valid image IDs created");
       return;
@@ -452,17 +346,33 @@ const CornerstoneViewer = () => {
     await initializeCornerstone(imageIds);
   };
 
-  const initializeCornerstone = async (imageStack) => {
+  const initializeCornerstone = async (instanceIds) => {
     if (typeof window === "undefined" || !element1Ref.current) return;
 
     try {
+      // Fetch initial batch of images
+      const fetchedImages = await fetch("/api/dicom-proxy", {
+        method: "POST",
+        body: JSON.stringify(instanceIds),
+      });
+      const data = await fetchedImages.json();
+      console.log("Initial batch data:", data);
+
+      // Create imageStack from the fetched data
+      const imageStack = data.results
+        .filter((result) => result.success)
+        .map((result, index) => `base64image:${result.instanceId}:${index}`);
+
+      if (imageStack.length === 0) {
+        console.error("No images successfully fetched in initial batch");
+        return;
+      }
+
       // Initialize Cornerstone
       await cornerstone.init();
-
-      // Initialize Cornerstone Tools
       await cornerstoneTools.init();
 
-      // Debug: Log available tools and their toolName properties
+      // Debug: Log available tools
       const availableTools = Object.keys(cornerstoneTools).filter((key) =>
         key.endsWith("Tool")
       );
@@ -471,12 +381,12 @@ const CornerstoneViewer = () => {
         console.log(`${toolKey}.toolName:`, tool?.toolName || "undefined");
       });
 
-      // Register DICOM image loader
-      registerDICOMImageLoader(cornerstone.imageLoader);
+      // Register base64 image loader with initial batch
+      registerBase64ImageLoader(cornerstone.imageLoader, data.results);
 
       // Add metadata provider
       cornerstone.metaData.addProvider(
-        (type, imageId) => metaDataProvider(type, imageId, imageStack),
+        (type, imageId) => metaDataProvider(type, imageId, instanceIds),
         10000
       );
 
@@ -499,7 +409,7 @@ const CornerstoneViewer = () => {
       renderingEngine.setViewports(viewportInputArray);
       console.log("Viewport set:", viewportId);
 
-      // Set stack for viewport
+      // Set stack for viewport with initial batch
       const stackViewport = renderingEngine.getStackViewports()[0];
       if (!stackViewport) {
         throw new Error("Stack viewport not found");
@@ -520,7 +430,7 @@ const CornerstoneViewer = () => {
           viewport.render();
         }
       } catch (error) {
-        console.error("Error loading stack images:", error);
+        console.error("Error loading initial stack images:", error);
         return;
       }
 
@@ -540,6 +450,101 @@ const CornerstoneViewer = () => {
       console.error("Error initializing Cornerstone:", error);
       isMountedRef.current = false;
     }
+  };
+
+  // DICOM Image Loader (unchanged)
+  const registerBase64ImageLoader = (imageLoader, imageResults) => {
+    const imageDataMap = new Map();
+    imageResults.forEach((result, index) => {
+      if (result.success) {
+        const imageId = `base64image:${result.instanceId}:${index}`;
+        imageDataMap.set(imageId, result);
+      }
+    });
+
+    const loadImage = (imageId) => {
+      const canvas = document.createElement("canvas");
+
+      const promise = new Promise((resolve, reject) => {
+        const imageResult = imageDataMap.get(imageId);
+
+        if (!imageResult) {
+          reject(new Error(`Image not found for ID: ${imageId}`));
+          return;
+        }
+
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+
+        img.onload = function () {
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+
+          const imageData = ctx.getImageData(
+            0,
+            0,
+            img.naturalWidth,
+            img.naturalHeight
+          );
+
+          function getPixelData() {
+            const pixelData = new Uint8Array(
+              img.naturalWidth * img.naturalHeight * 3
+            );
+            const data = imageData.data;
+            let j = 0;
+            for (let i = 0; i < data.length; i += 4) {
+              pixelData[j++] = data[i];
+              pixelData[j++] = data[i + 1];
+              pixelData[j++] = data[i + 2];
+            }
+            return pixelData;
+          }
+
+          const image = {
+            imageId: imageId,
+            minPixelValue: 0,
+            maxPixelValue: 255,
+            slope: 1,
+            intercept: 0,
+            windowCenter: 128,
+            windowWidth: 255,
+            getPixelData,
+            getCanvas: () => canvas,
+            getImage: () => img,
+            rows: img.naturalHeight,
+            columns: img.naturalWidth,
+            height: img.naturalHeight,
+            width: img.naturalWidth,
+            color: true,
+            rgba: false,
+            columnPixelSpacing: 1,
+            rowPixelSpacing: 1,
+            invert: false,
+            sizeInBytes: img.naturalWidth * img.naturalHeight * 3,
+            numberOfComponents: 3,
+          };
+
+          resolve(image);
+        };
+
+        img.onerror = function (error) {
+          reject(new Error(`Failed to load image: ${error.message}`));
+        };
+
+        const mimeType = imageResult.contentType || "image/png";
+        img.src = `data:${mimeType};base64,${imageResult.data}`;
+      });
+
+      return {
+        promise,
+        cancelFn: () => {},
+      };
+    };
+
+    imageLoader.registerImageLoader("base64image", loadImage);
   };
 
   const resetViewport = () => {
@@ -907,7 +912,7 @@ const CornerstoneViewer = () => {
             {/* Series panel */}
             <div
               className={`${
-                isFullscreen ? "absolute left-0 top-0 h-full z-10" : "relative"
+                isFullscreen ? "absolute left-0 top-0 h-full z-10" : "relative "
               }`}
             >
               <div
@@ -930,7 +935,7 @@ const CornerstoneViewer = () => {
                   )}
                 </Button>
 
-                <Collapse in={!seriesCollapsed}>
+                <Collapse in={!seriesCollapsed} className="!h-full">
                   <div className="flex flex-col h-full">
                     <div className="p-4 pb-2 flex-shrink-0">
                       <p className="text-gray-300 text-sm font-medium">

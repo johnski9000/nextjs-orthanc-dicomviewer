@@ -13,6 +13,7 @@ export async function POST(request: NextRequest) {
       }
     );
     console.log("resopnse", response);
+
     const data = await response.json();
     const studyInstances = data;
     if (!response.ok) {
