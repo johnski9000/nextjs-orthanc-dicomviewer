@@ -81,7 +81,7 @@ const metaDataProvider = (type, imageId, imageIds) => {
   return undefined;
 };
 
-const CornerstoneViewer = (pack) => {
+const CornerstoneViewer = ({ pack }) => {
   console.log("pack", pack);
   const [selectedSeriesIndex, setSelectedSeriesIndex] = useState(0);
   const [study, setStudy] = useState(null);
@@ -90,6 +90,11 @@ const CornerstoneViewer = (pack) => {
   const [activeToolName, setActiveToolName] = useState("WindowLevel");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [seriesCollapsed, setSeriesCollapsed] = useState(false);
+
+  // New state for caching images by series index
+  const [cachedImages, setCachedImages] = useState({});
+  const [loadingSeriesIndex, setLoadingSeriesIndex] = useState(null);
+
   const [prefetchState, setPrefetchState] = useState({
     isActive: false,
     current: 0,
@@ -97,6 +102,7 @@ const CornerstoneViewer = (pack) => {
     failed: 0,
     progress: 0,
   });
+  const [prefetchQueue, setPrefetchQueue] = useState([]);
   const imageCache = useRef(new Map());
   const prefetchAbortController = useRef(null);
   const element1Ref = useRef(null);
@@ -216,7 +222,7 @@ const CornerstoneViewer = (pack) => {
   const fetchStudy = async (studyId) => {
     try {
       setLoading(true);
-      const data = await fetch("/api/getStudyData", {
+      const data = await fetch("/api/getStudyData/light", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -226,19 +232,137 @@ const CornerstoneViewer = (pack) => {
         }),
       });
       const response = await data.json();
-      setStudy(response.studies[0].series);
+      console.log("rsponse", response.series);
+      setStudy(response.series);
       setSelectedSeriesIndex(0);
 
       // Initialize with the first series
-      if (response.studies[0].series.length > 0) {
-        const firstSeries = response.studies[0].series[0];
-        await initializeWithSeries(firstSeries);
+      if (response.series.length > 0) {
+        const firstSeries = response.series[0].Instances;
+        console.log("first series", firstSeries);
+        await initializeWithSeries(firstSeries, 0);
+
+        // Start background prefetching for other series
+        if (response.series.length > 1) {
+          const otherSeriesIndices = response.series
+            .map((_, index) => index)
+            .filter((index) => index !== 0); // Exclude the first series we just loaded
+
+          setPrefetchQueue(otherSeriesIndices);
+          setPrefetchState({
+            isActive: true,
+            current: 0,
+            total: otherSeriesIndices.length,
+            failed: 0,
+            progress: 0,
+          });
+
+          // Start prefetching
+          prefetchSeries(response.series, otherSeriesIndices);
+        }
       }
     } catch (error) {
       console.error("Error fetching study:", error);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Background prefetch function
+  const prefetchSeries = async (allSeries, seriesIndices) => {
+    console.log(
+      `Starting background prefetch for ${seriesIndices.length} series`
+    );
+
+    for (let i = 0; i < seriesIndices.length; i++) {
+      const seriesIndex = seriesIndices[i];
+
+      // Check if component is still mounted
+      if (!isMountedRef.current) {
+        console.log("Component unmounted, stopping prefetch");
+        break;
+      }
+
+      // Check if already cached (in case user manually clicked it)
+      if (cachedImages[seriesIndex]) {
+        console.log(`Series ${seriesIndex} already cached, skipping`);
+        setPrefetchState((prev) => ({
+          ...prev,
+          current: i + 1,
+          progress: ((i + 1) / prev.total) * 100,
+        }));
+        continue;
+      }
+
+      try {
+        console.log(
+          `Prefetching series ${seriesIndex} (${i + 1}/${seriesIndices.length})`
+        );
+
+        const series = allSeries[seriesIndex];
+        const instanceIds = series.Instances;
+
+        // Fetch images from Go server
+        const fetchedImages = await fetch(
+          "http://localhost:8080/fetch-instances",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              instanceIds: instanceIds,
+            }),
+          }
+        );
+
+        const data = await fetchedImages.json();
+        console.log(
+          `Prefetched series ${seriesIndex}: ${data.successful}/${data.total_instances} images`
+        );
+
+        // Transform and cache the images
+        const imageResults = data.images.map((image) => ({
+          instanceId: image.instanceId,
+          success: image.success,
+          data: image.data,
+          contentType: image.contentType,
+          error: image.error,
+        }));
+
+        // Update cache
+        setCachedImages((prev) => ({
+          ...prev,
+          [seriesIndex]: imageResults,
+        }));
+
+        // Update prefetch state
+        setPrefetchState((prev) => ({
+          ...prev,
+          current: i + 1,
+          progress: ((i + 1) / prev.total) * 100,
+        }));
+
+        // Small delay to avoid overwhelming the server
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error(`Error prefetching series ${seriesIndex}:`, error);
+        setPrefetchState((prev) => ({
+          ...prev,
+          current: i + 1,
+          failed: prev.failed + 1,
+          progress: ((i + 1) / prev.total) * 100,
+        }));
+      }
+    }
+
+    // Prefetch complete
+    setPrefetchState((prev) => ({
+      ...prev,
+      isActive: false,
+    }));
+    setPrefetchQueue([]);
+    console.log("Background prefetch complete");
   };
 
   const initializeTools = () => {
@@ -327,62 +451,95 @@ const CornerstoneViewer = (pack) => {
     }
   };
 
-  const initializeWithSeries = async (series) => {
-    if (!series || !series.instances || series.instances.length === 0) {
+  const initializeWithSeries = async (series, seriesIndex) => {
+    if (!series || series.length === 0) {
       console.error("No instances available in series");
       return;
     }
-    console.log(series.instances);
-    // Create image IDs from the series instances
-    const imageIds = series.instances
-      .map((instance) => extractInstanceId(instance.url))
-      .filter((url) => url !== null);
-    console.log(imageIds);
-    if (imageIds.length === 0) {
-      console.error("No valid image IDs created");
-      return;
-    }
 
-    await initializeCornerstone(imageIds);
+    await initializeCornerstone(series, seriesIndex);
   };
 
-  const initializeCornerstone = async (instanceIds) => {
+  const initializeCornerstone = async (instanceIds, seriesIndex) => {
     if (typeof window === "undefined" || !element1Ref.current) return;
 
     try {
-      // Fetch initial batch of images
-      const fetchedImages = await fetch("/api/dicom-proxy", {
-        method: "POST",
-        body: JSON.stringify(instanceIds),
-      });
-      const data = await fetchedImages.json();
-      console.log("Initial batch data:", data);
+      let imageResults;
 
-      // Create imageStack from the fetched data
-      const imageStack = data.results
+      // Check if we have cached images for this series
+      if (cachedImages[seriesIndex]) {
+        console.log(`Using cached images for series ${seriesIndex}`);
+        imageResults = cachedImages[seriesIndex];
+      } else {
+        console.log(`Fetching images for series ${seriesIndex}`);
+        setLoadingSeriesIndex(seriesIndex);
+
+        // Fetch images from Go server
+        const fetchedImages = await fetch(
+          "http://localhost:8080/fetch-instances",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              instanceIds: instanceIds,
+            }),
+          }
+        );
+
+        const data = await fetchedImages.json();
+        console.log("Fetched data from Go server:", data);
+
+        // Transform the response to match the expected structure
+        imageResults = data.images.map((image) => ({
+          instanceId: image.instanceId,
+          success: image.success,
+          data: image.data,
+          contentType: image.contentType,
+          error: image.error,
+        }));
+
+        // Cache the images for this series
+        setCachedImages((prev) => ({
+          ...prev,
+          [seriesIndex]: imageResults,
+        }));
+
+        console.log(
+          `Successfully loaded and cached ${data.successful}/${data.total_instances} images in ${data.processing_time}s`
+        );
+
+        setLoadingSeriesIndex(null);
+      }
+
+      // Create imageStack from the fetched/cached data
+      const imageStack = imageResults
         .filter((result) => result.success)
         .map((result, index) => `base64image:${result.instanceId}:${index}`);
 
       if (imageStack.length === 0) {
-        console.error("No images successfully fetched in initial batch");
+        console.error("No images successfully fetched");
         return;
       }
 
-      // Initialize Cornerstone
-      await cornerstone.init();
-      await cornerstoneTools.init();
+      // Initialize Cornerstone only if not already initialized
+      if (!cornerstone.getRenderingEngine(renderingEngineId)) {
+        await cornerstone.init();
+        await cornerstoneTools.init();
 
-      // Debug: Log available tools
-      const availableTools = Object.keys(cornerstoneTools).filter((key) =>
-        key.endsWith("Tool")
-      );
-      availableTools.forEach((toolKey) => {
-        const tool = cornerstoneTools[toolKey];
-        console.log(`${toolKey}.toolName:`, tool?.toolName || "undefined");
-      });
+        // Debug: Log available tools
+        const availableTools = Object.keys(cornerstoneTools).filter((key) =>
+          key.endsWith("Tool")
+        );
+        availableTools.forEach((toolKey) => {
+          const tool = cornerstoneTools[toolKey];
+          console.log(`${toolKey}.toolName:`, tool?.toolName || "undefined");
+        });
+      }
 
-      // Register base64 image loader with initial batch
-      registerBase64ImageLoader(cornerstone.imageLoader, data.results);
+      // Register base64 image loader with transformed results
+      registerBase64ImageLoader(cornerstone.imageLoader, imageResults);
 
       // Add metadata provider
       cornerstone.metaData.addProvider(
@@ -409,7 +566,7 @@ const CornerstoneViewer = (pack) => {
       renderingEngine.setViewports(viewportInputArray);
       console.log("Viewport set:", viewportId);
 
-      // Set stack for viewport with initial batch
+      // Set stack for viewport
       const stackViewport = renderingEngine.getStackViewports()[0];
       if (!stackViewport) {
         throw new Error("Stack viewport not found");
@@ -430,7 +587,7 @@ const CornerstoneViewer = (pack) => {
           viewport.render();
         }
       } catch (error) {
-        console.error("Error loading initial stack images:", error);
+        console.error("Error loading stack images:", error);
         return;
       }
 
@@ -449,6 +606,7 @@ const CornerstoneViewer = (pack) => {
     } catch (error) {
       console.error("Error initializing Cornerstone:", error);
       isMountedRef.current = false;
+      setLoadingSeriesIndex(null);
     }
   };
 
@@ -566,8 +724,7 @@ const CornerstoneViewer = (pack) => {
   useEffect(() => {
     if (isMountedRef.current) return;
     isMountedRef.current = true;
-
-    fetchStudy("e38b2cea-2661291f-46d12e11-02438677-890941a4");
+    fetchStudy(pack.dicomUrl);
 
     return () => {
       console.log("Cleaning up Cornerstone...");
@@ -587,7 +744,9 @@ const CornerstoneViewer = (pack) => {
 
   const handleSeriesClick = async (seriesIndex) => {
     setSelectedSeriesIndex(seriesIndex);
-
+    console.log(seriesIndex);
+    console.log(study);
+    console.log(study[seriesIndex]);
     const selectedSeries = study[seriesIndex];
     if (selectedSeries) {
       // Destroy existing tool group
@@ -604,9 +763,9 @@ const CornerstoneViewer = (pack) => {
         renderingEngineRef.current = null;
       }
 
-      // Reinitialize with new series
+      // Reinitialize with new series (passing the series index)
       setIsInitialized(false);
-      await initializeWithSeries(selectedSeries);
+      await initializeWithSeries(selectedSeries.Instances, seriesIndex);
     }
   };
 
@@ -711,10 +870,9 @@ const CornerstoneViewer = (pack) => {
 
   // Helper to create preview URL for thumbnails
   const createPreviewUrl = (instanceUrl) => {
-    const instanceId = extractInstanceId(instanceUrl);
-    if (!instanceId) return null;
+    if (!instanceUrl) return null;
     // Use local proxy for thumbnails too
-    return `/api/dicom-proxy?instanceId=${instanceId}`;
+    return `/api/dicom-proxy?instanceId=${instanceUrl}`;
   };
 
   // Hardcoded array of tool keys
@@ -773,6 +931,31 @@ const CornerstoneViewer = (pack) => {
         )}
 
         <div className="flex flex-col items-center h-full">
+          {/* Prefetch Progress Bar */}
+          {prefetchState.isActive && (
+            <div className="w-full max-w-[700px] mx-auto mb-2">
+              <div className="bg-gray-800 rounded-lg p-2">
+                <div className="flex items-center justify-between text-xs text-gray-300 mb-1">
+                  <span>Preloading series in background...</span>
+                  <span>
+                    {prefetchState.current}/{prefetchState.total}
+                  </span>
+                </div>
+                <div className="w-full bg-gray-700 rounded-full h-2">
+                  <div
+                    className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${prefetchState.progress}%` }}
+                  />
+                </div>
+                {prefetchState.failed > 0 && (
+                  <div className="text-xs text-red-400 mt-1">
+                    {prefetchState.failed} series failed to load
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Toolbar */}
           <div
             className={`flex items-center justify-between px-4 gap-4 ${
@@ -947,9 +1130,13 @@ const CornerstoneViewer = (pack) => {
                       <div className="space-y-3 pr-2">
                         {study?.map((series, index) => {
                           const selected = index === selectedSeriesIndex;
-                          const firstInstance = series.instances[0];
+                          const isLoading = loadingSeriesIndex === index;
+                          const isCached = cachedImages[index] !== undefined;
+                          const isPrefetching = prefetchQueue.includes(index);
+                          const firstInstance = series.Instances[0];
+                          console.log("firstinstance", firstInstance);
                           const previewUrl = firstInstance
-                            ? createPreviewUrl(firstInstance.url)
+                            ? createPreviewUrl(firstInstance)
                             : null;
 
                           return (
@@ -967,6 +1154,23 @@ const CornerstoneViewer = (pack) => {
                                   Selected
                                 </div>
                               )}
+                              {isCached && !selected && (
+                                <div className="absolute top-1 right-1 bg-green-500 text-white text-xs px-2 py-1 rounded-full shadow-md z-10">
+                                  Cached
+                                </div>
+                              )}
+                              {isPrefetching && !isCached && (
+                                <div className="absolute top-1 right-1 bg-yellow-500 text-white text-xs px-2 py-1 rounded-full shadow-md z-10 animate-pulse">
+                                  Queued
+                                </div>
+                              )}
+                              {isLoading && (
+                                <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-20">
+                                  <div className="text-white text-sm">
+                                    Loading...
+                                  </div>
+                                </div>
+                              )}
                               {previewUrl && (
                                 <img
                                   src={previewUrl}
@@ -980,7 +1184,7 @@ const CornerstoneViewer = (pack) => {
                               <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 text-white text-xs p-2">
                                 <p className="font-medium">{series.Modality}</p>
                                 <p className="text-gray-300">
-                                  {series.instances.length} images
+                                  {series.Instances.length} images
                                 </p>
                               </div>
                             </div>

@@ -29,10 +29,6 @@ type ImageResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
-type SeriesData struct {
-	Instances []string `json:"Instances"`
-}
-
 type StudyResult struct {
 	StudyID        string        `json:"study_id"`
 	Images         []ImageResult `json:"images"`
@@ -43,7 +39,8 @@ type StudyResult struct {
 }
 
 type FetchRequest struct {
-	StudyID string `json:"studyId"`
+	StudyID     string   `json:"studyId,omitempty"`
+	InstanceIDs []string `json:"instanceIds"`
 }
 
 func NewDicomFetcher(baseURL, authToken string) *DicomFetcher {
@@ -61,33 +58,6 @@ func NewDicomFetcher(baseURL, authToken string) *DicomFetcher {
 			},
 		},
 	}
-}
-
-func (d *DicomFetcher) fetchSeriesData(studyID string) ([]SeriesData, error) {
-	url := fmt.Sprintf("%s/studies/%s/series", d.BaseURL, studyID)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Basic "+d.AuthToken)
-
-	resp, err := d.Client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch series: %d", resp.StatusCode)
-	}
-
-	var series []SeriesData
-	if err := json.NewDecoder(resp.Body).Decode(&series); err != nil {
-		return nil, err
-	}
-
-	return series, nil
 }
 
 func (d *DicomFetcher) fetchImage(instanceID string) ImageResult {
@@ -157,35 +127,23 @@ func (d *DicomFetcher) fetchAllImages(instanceIDs []string, maxConcurrent int) [
 	return results
 }
 
-func (d *DicomFetcher) ProcessStudy(studyID string) (*StudyResult, error) {
+func (d *DicomFetcher) ProcessInstances(instanceIDs []string, studyID string) (*StudyResult, error) {
 	startTime := time.Now()
 
-	// Fetch series data
-	series, err := d.fetchSeriesData(studyID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract all instance IDs
-	var allInstanceIDs []string
-	for _, s := range series {
-		allInstanceIDs = append(allInstanceIDs, s.Instances...)
-	}
-
-	fmt.Printf("Found %d instances for study %s\n", len(allInstanceIDs), studyID)
+	fmt.Printf("Processing %d instances\n", len(instanceIDs))
 
 	// Adaptive concurrency based on instance count
 	adaptiveConcurrency := 50 // Start higher
-	if len(allInstanceIDs) > 1000 {
+	if len(instanceIDs) > 1000 {
 		adaptiveConcurrency = 100 // Even more for large studies
-	} else if len(allInstanceIDs) < 100 {
+	} else if len(instanceIDs) < 100 {
 		adaptiveConcurrency = 25  // Conservative for small studies
 	}
 
-	fmt.Printf("Using %d concurrent workers for %d instances\n", adaptiveConcurrency, len(allInstanceIDs))
+	fmt.Printf("Using %d concurrent workers for %d instances\n", adaptiveConcurrency, len(instanceIDs))
 
 	// Fetch all images concurrently
-	results := d.fetchAllImages(allInstanceIDs, adaptiveConcurrency)
+	results := d.fetchAllImages(instanceIDs, adaptiveConcurrency)
 
 	// Filter successful images
 	var successfulImages []ImageResult
@@ -203,7 +161,7 @@ func (d *DicomFetcher) ProcessStudy(studyID string) (*StudyResult, error) {
 	return &StudyResult{
 		StudyID:        studyID,
 		Images:         successfulImages,
-		TotalInstances: len(allInstanceIDs),
+		TotalInstances: len(instanceIDs),
 		Successful:     len(successfulImages),
 		Failed:         failedCount,
 		ProcessingTime: processingTime,
@@ -217,7 +175,7 @@ func enableCors(w *http.ResponseWriter) {
 	(*w).Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 }
 
-func handleFetchStudy(w http.ResponseWriter, r *http.Request) {
+func handleFetchInstances(w http.ResponseWriter, r *http.Request) {
 	enableCors(&w)
 	
 	if r.Method == "OPTIONS" {
@@ -236,7 +194,13 @@ func handleFetchStudy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Processing study ID: %s", request.StudyID)
+	if len(request.InstanceIDs) == 0 {
+		log.Printf("Error: No instance IDs provided")
+		http.Error(w, "No instance IDs provided", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Processing %d instance IDs", len(request.InstanceIDs))
 
 	authToken := os.Getenv("ORTHANC_TOKEN")
 	if authToken == "" {
@@ -250,16 +214,16 @@ func handleFetchStudy(w http.ResponseWriter, r *http.Request) {
 		authToken,
 	)
 
-	log.Printf("Starting to process study: %s", request.StudyID)
-	result, err := fetcher.ProcessStudy(request.StudyID)
+	log.Printf("Starting to process %d instances", len(request.InstanceIDs))
+	result, err := fetcher.ProcessInstances(request.InstanceIDs, request.StudyID)
 	if err != nil {
-		log.Printf("Error processing study %s: %v", request.StudyID, err)
+		log.Printf("Error processing instances: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Successfully processed study %s: %d/%d images in %.2fs", 
-		request.StudyID, result.Successful, result.TotalInstances, result.ProcessingTime)
+	log.Printf("Successfully processed instances: %d/%d images in %.2fs", 
+		result.Successful, result.TotalInstances, result.ProcessingTime)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -284,7 +248,7 @@ func main() {
 	}
 	log.Printf("ORTHANC_TOKEN loaded successfully (length: %d)", len(authToken))
 
-	http.HandleFunc("/fetch-study", handleFetchStudy)
+	http.HandleFunc("/fetch-instances", handleFetchInstances)
 	http.HandleFunc("/health", handleHealth)
 	
 	port := os.Getenv("PORT")
@@ -294,8 +258,8 @@ func main() {
 
 	fmt.Printf("DICOM Fetcher server starting on port %s...\n", port)
 	fmt.Println("Endpoints:")
-	fmt.Println("  POST /fetch-study  - Fetch DICOM images for a study")
-	fmt.Println("  GET  /health       - Health check")
+	fmt.Println("  POST /fetch-instances  - Fetch DICOM images for instance IDs")
+	fmt.Println("  GET  /health          - Health check")
 	
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
